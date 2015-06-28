@@ -115,6 +115,10 @@ if (typeof jQuery === 'undefined') {
     return Object.prototype.toString.call(obj) === '[object String]';
   };
 
+  var isFunction = function (obj) {
+    return Object.prototype.toString.call(obj) === '[object Function]';
+  };
+
   var uniqueId = 0;
 
   function Completer(element, option) {
@@ -224,8 +228,9 @@ if (typeof jQuery === 'undefined') {
     //
     // value    - The selected element of the array callbacked from search func.
     // strategy - The Strategy object.
-    select: function (value, strategy) {
-      this.adapter.select(value, strategy);
+    // e        - Click or keydown event object.
+    select: function (value, strategy, e) {
+      this.adapter.select(value, strategy, e);
       this.fire('change').fire('textComplete:select', value, strategy);
       this.adapter.focus();
     },
@@ -248,8 +253,9 @@ if (typeof jQuery === 'undefined') {
         var strategy = this.strategies[i];
         var context = strategy.context(text);
         if (context || context === '') {
+          var matchRegexp = isFunction(strategy.match) ? strategy.match(text) : strategy.match;
           if (isString(context)) { text = context; }
-          var match = text.match(strategy.match);
+          var match = text.match(matchRegexp);
           if (match) { return [strategy, match[strategy.index], match]; }
         }
       }
@@ -320,6 +326,16 @@ if (typeof jQuery === 'undefined') {
     });
   });
 
+  var commands = {
+    SKIP_DEFAULT: 0,
+    KEY_UP: 1,
+    KEY_DOWN: 2,
+    KEY_ENTER: 3,
+    KEY_PAGEUP: 4,
+    KEY_PAGEDOWN: 5,
+    KEY_ESCAPE: 6
+  };
+
   // Dropdown view
   // =============
 
@@ -352,9 +368,9 @@ if (typeof jQuery === 'undefined') {
     findOrCreateElement: function (option) {
       var $parent = option.appendTo;
       if (!($parent instanceof $)) { $parent = $($parent); }
-      var $el = $parent.children('.dropdown-menu')
+      var $el = $parent.children('.textcomplete-dropdown-menu')
       if (!$el.length) {
-        $el = $('<ul class="dropdown-menu"></ul>').css({
+        $el = $('<ul class="textcomplete-dropdown-menu"></ul>').css({
           display: 'none',
           left: 0,
           position: 'absolute',
@@ -369,7 +385,7 @@ if (typeof jQuery === 'undefined') {
     // Public properties
     // -----------------
 
-    $el:       null,  // jQuery object of ul.dropdown-menu element.
+    $el:       null,  // jQuery object of ul.textcomplete-dropdown-menu element.
     $inputEl:  null,  // jQuery object of target textarea.
     completer: null,
     footer:    null,
@@ -411,15 +427,15 @@ if (typeof jQuery === 'undefined') {
       }
     },
 
-    setPosition: function (position) {
-      this.$el.css(this._applyPlacement(position));
+    setPosition: function (pos) {
+      this.$el.css(this._applyPlacement(pos));
 
       // Make the dropdown fixed if the input is also fixed
       // This can't be done during init, as textcomplete may be used on multiple elements on the same page
       // Because the same dropdown is reused behind the scenes, we need to recheck every time the dropdown is showed
       var position = 'absolute';
       // Check if input or one of its parents has positioning we need to care about
-      this.$inputEl.add(this.$inputEl.parents()).each(function() { 
+      this.$inputEl.add(this.$inputEl.parents()).each(function() {
         if($(this).css('position') === 'absolute') // The element has absolute positioning, so it's all OK
           return false;
         if($(this).css('position') === 'fixed') {
@@ -481,6 +497,10 @@ if (typeof jQuery === 'undefined') {
       return e.keyCode === 34;  // PAGEDOWN
     },
 
+    isEscape: function (e) {
+      return e.keyCode === 27;  // ESCAPE
+    },
+
     // Private properties
     // ------------------
 
@@ -506,7 +526,7 @@ if (typeof jQuery === 'undefined') {
         $el = $el.closest('.textcomplete-item');
       }
       var datum = this.data[parseInt($el.data('index'), 10)];
-      this.completer.select(datum.value, datum.strategy);
+      this.completer.select(datum.value, datum.strategy, e);
       var self = this;
       // Deactive at next tick to allow other event handlers to know whether
       // the dropdown has been shown or not.
@@ -526,21 +546,58 @@ if (typeof jQuery === 'undefined') {
 
     _onKeydown: function (e) {
       if (!this.shown) { return; }
+
+      var command;
+
+      if ($.isFunction(this.option.onKeydown)) {
+        command = this.option.onKeydown(e, commands);
+      }
+
+      if (command == null) {
+        command = this._defaultKeydown(e);
+      }
+
+      switch (command) {
+        case commands.KEY_UP:
+          e.preventDefault();
+          this._up();
+          break;
+        case commands.KEY_DOWN:
+          e.preventDefault();
+          this._down();
+          break;
+        case commands.KEY_ENTER:
+          e.preventDefault();
+          this._enter(e);
+          break;
+        case commands.KEY_PAGEUP:
+          e.preventDefault();
+          this._pageup();
+          break;
+        case commands.KEY_PAGEDOWN:
+          e.preventDefault();
+          this._pagedown();
+          break;
+        case commands.KEY_ESCAPE:
+          e.preventDefault();
+          this.deactivate();
+          break;
+      }
+    },
+
+    _defaultKeydown: function (e) {
       if (this.isUp(e)) {
-        e.preventDefault();
-        this._up();
+        return commands.KEY_UP;
       } else if (this.isDown(e)) {
-        e.preventDefault();
-        this._down();
+        return commands.KEY_DOWN;
       } else if (this.isEnter(e)) {
-        e.preventDefault();
-        this._enter();
+        return commands.KEY_ENTER;
       } else if (this.isPageup(e)) {
-        e.preventDefault();
-        this._pageup();
+        return commands.KEY_PAGEUP;
       } else if (this.isPagedown(e)) {
-        e.preventDefault();
-        this._pagedown();
+        return commands.KEY_PAGEDOWN;
+      } else if (this.isEscape(e)) {
+        return commands.KEY_ESCAPE;
       }
     },
 
@@ -564,10 +621,10 @@ if (typeof jQuery === 'undefined') {
       this._setScroll();
     },
 
-    _enter: function () {
+    _enter: function (e) {
       var datum = this.data[parseInt(this._getActiveElement().data('index'), 10)];
-      this.completer.select(datum.value, datum.strategy);
-      this._setScroll();
+      this.completer.select(datum.value, datum.strategy, e);
+      this.deactivate();
     },
 
     _pageup: function () {
@@ -664,7 +721,7 @@ if (typeof jQuery === 'undefined') {
       }
     },
 
-    _applyPlacement: function (position) { 
+    _applyPlacement: function (position) {
       // If the 'placement' option set to 'top', move the position above the element.
       if (this.placement.indexOf('top') !== -1) {
         // Overwrite the position object to set the 'bottom' property instead of the top.
@@ -688,6 +745,7 @@ if (typeof jQuery === 'undefined') {
   });
 
   $.fn.textcomplete.Dropdown = Dropdown;
+  $.extend($.fn.textcomplete, commands);
 }(jQuery);
 
 +function ($) {
@@ -848,6 +906,7 @@ if (typeof jQuery === 'undefined') {
     // Suppress searching if it returns true.
     _skipSearch: function (clickEvent) {
       switch (clickEvent.keyCode) {
+        case 13: // ENTER
         case 40: // DOWN
         case 38: // UP
           return true;
@@ -894,10 +953,10 @@ if (typeof jQuery === 'undefined') {
     // --------------
 
     // Update the textarea with the given value and strategy.
-    select: function (value, strategy) {
+    select: function (value, strategy, e) {
       var pre = this.getTextFromHeadToCaret();
       var post = this.el.value.substring(this.el.selectionEnd);
-      var newSubstr = strategy.replace(value);
+      var newSubstr = strategy.replace(value, e);
       if ($.isArray(newSubstr)) {
         post = newSubstr[1] + post;
         newSubstr = newSubstr[0];
@@ -981,10 +1040,10 @@ if (typeof jQuery === 'undefined') {
     // Public methods
     // --------------
 
-    select: function (value, strategy) {
+    select: function (value, strategy, e) {
       var pre = this.getTextFromHeadToCaret();
       var post = this.el.value.substring(pre.length);
-      var newSubstr = strategy.replace(value);
+      var newSubstr = strategy.replace(value, e);
       if ($.isArray(newSubstr)) {
         post = newSubstr[1] + post;
         newSubstr = newSubstr[0];
@@ -1032,7 +1091,7 @@ if (typeof jQuery === 'undefined') {
 
     // Update the content with the given value and strategy.
     // When an dropdown item is selected, it is executed.
-    select: function (value, strategy) {
+    select: function (value, strategy, e) {
       var pre = this.getTextFromHeadToCaret();
       var sel = window.getSelection()
       var range = sel.getRangeAt(0);
@@ -1040,7 +1099,7 @@ if (typeof jQuery === 'undefined') {
       selection.selectNodeContents(range.startContainer);
       var content = selection.toString();
       var post = content.substring(range.startOffset);
-      var newSubstr = strategy.replace(value);
+      var newSubstr = strategy.replace(value, e);
       if ($.isArray(newSubstr)) {
         post = newSubstr[1] + post;
         newSubstr = newSubstr[0];
@@ -1079,6 +1138,7 @@ if (typeof jQuery === 'undefined') {
       position.left -= this.$el.offset().left;
       position.top += $node.height() - this.$el.offset().top;
       position.lineHeight = $node.height();
+      $node.remove();
       var dir = this.$el.attr('dir') || this.$el.css('direction');
       if (dir === 'rtl') { position.left -= this.listView.$el.width(); }
       return position;
